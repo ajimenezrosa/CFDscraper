@@ -72,19 +72,19 @@ Some rules:
 
 Regarding Python3 and MySQL support:
 http://simon04.net/2013/03/python3-mysql/
+
 pymysql is drop in replacement?
 https://pypi.python.org/pypi/PyMySQL/0.6.1
-Did: conda install pymysql
+Do: pip install pymysql
 
 Because of a hang problem, installing the head from github:
 https://github.com/PyMySQL/PyMySQL/issues/136
+
 pip install --upgrade https://github.com/PyMySQL/PyMySQL/tarball/master
-this will no longer be needed after 0.6.1
+This will no longer be needed after 0.6.1
 
 Create n-column tables via a parameterized SQLalchemy-core method:
-http://stackoverflow.com/questions/2574105/
-sqlalchemy-dynamic-mapping/2575016#2575016
+http://stackoverflow.com/questions/2574105/sqlalchemy-dynamic-mapping/2575016#2575016
 
-http://stackoverflow.com/questions/2580497
-/database-on-the-fly-with-scripting-languages/2580543#2580543
+http://stackoverflow.com/questions/2580497/database-on-the-fly-with-scripting-languages/2580543#2580543
 
