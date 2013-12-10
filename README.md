@@ -4,6 +4,14 @@ CFDscraper
 Scrapes financial web tables and writes them to a MySQL database.
 Written with SQLalchemy-core to help ensure database portability.
 
+Dependencies:
+
+selenium
+sqlalchemy
+pandas
+bs4
+
+
 Algorithm:
 
 Create a database connection using initial parameters.
