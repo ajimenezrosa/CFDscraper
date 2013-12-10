@@ -1,0 +1,364 @@
+{\rtf1\ansi\ansicpg1252\cocoartf1265
+{\fonttbl\f0\fswiss\fcharset0 Helvetica;}
+{\colortbl;\red255\green255\blue255;}
+\margl1440\margr1440\vieww12200\viewh12860\viewkind0
+\pard\tx720\tx1440\tx2160\tx2880\tx3600\tx4320\tx5040\tx5760\tx6480\tx7200\tx7920\tx8640\pardirnatural
+
+\f0\fs24 \cf0 \
+\
+################################\
+\
+Consider moving away from connectionless execution.\
+What are the advantages, exactly???\
+\
+\
+\
+\
+Try simulating mouse movements in phantomjs.\
+Try simulating them in whatever.\
+\
+\
+\
+Move to github!!!!!!\
+\
+You can start tracking issues in a way that isn\'92t a lame text file.\
+It\'92s pretty much to the point right now where it shouldn\'92t be embarrassing you.\
+need to take out chrome path and database login specifics.\
+\
+\
+\
+\
+\
+\
+#2:\
+Stuck on a certain rate. For some reason the page is no longer updating.\
+Need to find out how long this takes. Perhaps some kind of time since last update? (on a debug thing)\
+Also time since start so I can subtract it and see how long it lasts.\
+Also do some googling.\
+\
+Update: no more javascript updates after 1680 seconds (28 minutes). Hmm.\
+for now, set browser lifetime at 28 min and address other problems.\
+can it detect mouseovers?\
+\
+For now, switch to chrome and stay there until everything is ironed out.\
+Go to PhantomJS once you have no other choice.\
+\
+\
+\
+\
+23:\
+363 2013-11-29 18:59:38  2.745\
+364 2013-11-29 18:59:38  2.745\
+Bug: Two entries. Duplicate rates, duplicate times, except off by one day.\
+How did it happen? I think because the website lists the time the table item\
+was last updated. This time could be quite a while ago. Hours even.\
+Put a line in that doesn't update the db from the web if the time is "stale".\
+Stale in this case might mean more than 5 minutes old.\
+Or, when checking update vs the db entry, just check the time without\
+checking the full datetime.\
+If that doesn't fix it, I can put in a test for the specific circumstance.\
+i.e. same rate, same time, different day.\
+\
+Related:\
+36:\
+I'm worried that the fix I made for when the UTC time and the web time are\
+different days (in custom_date_parser) might have some problems during the\
+weekend when there are only a few updates. It might get an update when\
+booting up from maintenance or whatever where it sees a date/rate from many\
+hours before or even from the day before. This won't fit into the simple\
+23 / 0 hour thing I coded. Take a look.\
+I could just discard the entry if the difference between the UTCime and\
+the web time is more than one hour.\
+But then, utctime and webtime are both useing GMT, right? So if they are\
+different days, it should no longer give a time, right?\
+This would be a great time to work out code for when web time is not GMT.\
+Certainly a thorny issue to deal with.\
+\
+\
+\
+28:\
+Once everything is working perfectly:\
+\
+Try disconnecting the database computer and see what happens. Put in\
+error handling so that this doesn't hose the scraper. It should gracefully wait\
+until the SQL serve comes back online. Not sure how much sql alchemy does this already.\
+\
+Try putting the scraping computer to sleep and see what happens. Again,\
+error handling should get things going again. \
+\
+\
+\
+4:\
+Fixed the auto-increment problem but now have a compound index with two primary keys.\
+Is that okay?\
+\
+\
+10:\
+Consider sending SMS or SMTP for errors.\
+\
+27:\
+Test on Linux.\
+\
+\
+\
+TO DO BELOW:\
+\
+Scrapes financial web tables and writes them to a MySQL database.\
+Written with SQLalchemy-core to help ensure database portability.\
+\
+Algorithm:\
+\
+Create a database connection using initial parameters.\
+Output a metadata and connection object.\
+\
+Using bootstrap_table as a guide, create tables in the db if they are missing.\
+\
+Using bootstrap_table as a guide, fill list_of_rows A from the database:\
+    Iterate bootstrap table:\
+    If a table is empty in the database:\
+        Fill list of rows with an empty placeholder (None).\
+    If a table has data, fill list_of_rows A with last data from the database.\
+        Where there are tables with no rows, enter NONE into list_of_rows A.\
+\
+Loop:\
+    Fill list_of_rows B from the web using the bootstrap table as guide.\
+    Make list_of_rows C by comparing list_of_rows A and list_of_rows B.\
+    Write list_of_rows C to the database.\
+    list_of_rows A = list_of_rows B (as a copy?)\
+    Wait some time, check for interrupt.\
+\
+\
+Data Structures (These are not classes, only examples):\
+\
+data_row:\
+    This contains the data loaded from the db, or from the web. It can be one\
+    of three different kinds which are indistinguishable: Old, news or changed.\
+    Form: [table_name_string, column_name_1, column_value_1, ...\
+        column_name_n, column_value_n ]\
+    Example: ["US_10_Year_Bond", "time", "12-1-13-12:00:00", "price", 2.425]\
+\
+list_of_rows:\
+    Simply a list of data_row entries.\
+\
+table_df:\
+    This is a disposable table scraped from the web and turned into a pandas\
+    Dataframe. I use it because being able to look up data by column and row\
+    makes things easy for loading into a list of rows. Its exact form is not\
+    important because it only exists inside of one function. (probably)\
+\
+bootstrap_table:\
+    A list of tuples to specify everything needed to create tables and scrape\
+    the web. By convention, I will always be making the first column the index\
+    in the database and the first column the one that is checked for changes.\
+    This will probably always be datetime. The dtypes are sql dtypes, not\
+    python dtypes.\
+\
+    bootstrap = (db_table_name,\
+               ((column1_name, column1_dtype, web_row_string, web_col_string),\
+                (column2_name, column2_dtype, web_row_string, web_col_string)))\
+\
+    The columns are always in bootstrap_table[][1].\
+    The total number of columns is given by len(bootstrap_table[x][1])\
+\
+Some rules:\
+    Use no ORMs. They might be too slow. SQLAlchemy core only.\
+    Speed test everything.\
+    Always rely on the bootstrap_table to unambiguously determine table form.\
+    Thus, table reflection is off limits.\
+    So as not to incure costs of converting from SQL datetime, consider an\
+    INT time format such as SQL UNIX_TIMESTAMP. (Will this work with pandas?)\
+    Important: is SQL UNIX_TIMESTAMP the same as the dreaded TIMESTAMP that\
+    corrects the time depending on what the system time zone is?\
+    Utilize executemany where ever possible. It might be faster than individual\
+    inserts.\
+\
+Regarding Python3 and MySQL support:\
+http://simon04.net/2013/03/python3-mysql/\
+pymysql is drop in replacement?\
+https://pypi.python.org/pypi/PyMySQL/0.6.1\
+Did: conda install pymysql\
+\
+Because of a hang problem, installing the head from github:\
+https://github.com/PyMySQL/PyMySQL/issues/136\
+pip install --upgrade https://github.com/PyMySQL/PyMySQL/tarball/master\
+this will no longer be needed after 0.6.1\
+\
+Create n-column tables via a parameterized SQLalchemy-core method:\
+http://stackoverflow.com/questions/2574105/\
+sqlalchemy-dynamic-mapping/2575016#2575016\
+\
+http://stackoverflow.com/questions/2580497\
+/database-on-the-fly-with-scripting-languages/2580543#2580543\
+\
+##############################################################################\
+TODO\
+\
+2:\
+Much here is predicated on UTCTime always being the first entry in each\
+column. Not sure if that is a good idea. Better to find and detect?\
+How about sorting the bootstrap table to make sure it is always first?\
+\
+3:\
+Consider using INT for time.\
+\
+4:\
+Fixed autoincrement problem but now have compound index. Is that okay?\
+\
+5:\
+Make config file. Using configparser might be worth Iterating:\
+http://www.pythonforbeginners.com/code-snippets-source-code/\
+how-to-use-configparser-in-python/\
+\
+6:\
+Profile the whole thing and speed it up.\
+\
+7:\
+Send only one update to SQL instead of many.\
+\
+8:\
+Test the midnight bug.\
+\
+10:\
+Consider SMS or SMTP for errors.\
+\
+11:\
+Is datetime really the best I can do for quick dates?\
+\
+12:\
+Lint it and put it up on githib.\
+\
+13:\
+Get the data sources coded.\
+\
+14:\
+Clean up doc strings and write more in-line comments.\
+Especially main().\
+\
+15:\
+Write doc tests?\
+\
+16:\
+Write unit tests?\
+\
+17:\
+Clean up dependencies. Only import what is needed.\
+\
+18:\
+Create switch to determine which of three webdrivers to use.\
+\
+19:\
+Do some argv stuff?\
+    log file\
+    config file\
+    verbose vs. terse\
+\
+20:\
+Try to access Oanda CFD stuff using a fake foreign account.\
+\
+21:\
+Make a better way to import the table data? Typing it all sucks but this\
+seems like a lot of work.\
+\
+23:\
+Bug: Two entries. Duplicate rates, duplicte times, except off by one day.\
+How did it happen? I think because the website lists the time the table item\
+was last updated. This time could be quite a while ago. Hours even.\
+Put a line in that doesn't update the db from the web if the time is "stale".\
+Stale in this case might mean more than 5 minutes old.\
+Or, when checking update vs the db entry, just check the time without\
+checking the full datetime.\
+If that doesn't fix it, I can put in a test for the specific circumstance.\
+i.e. same rate, same time, different day.\
+\
+24:\
+Chromedriver\
+    1. Make chromedriver path a global defined elsewhere.\
+    3. Do the implicit wait thing. Only close the popup if it exists.\
+    5. Put chomedriver where it belongs for each OS.\
+\
+25:\
+Data structures in the above docs are not up to date for what is really\
+in use below. Fix it.\
+\
+\
+27:\
+Test on Linux.\
+\
+28:\
+Try disconnecting the database computer and see what happens. Put in\
+error handleing so that this doesn't hose the scraper.\
+\
+29:\
+Try putting the scraping computer to sleep and see what happens. Again,\
+error handling should get things going again.\
+\
+31:\
+What if the page stops being updated? Is there a way to detect this?\
+\
+32:\
+Make sure that osx isnt putting the browser or python session into a nap.\
+Or, explain how browser.pagesource takes 687 seconds for phantomjs.\
+\
+33:\
+SQL says the encoding is latin-something or other. But it should be unicode.\
+Fix it.\
+\
+35:\
+Handle it when the webdriver url load takes forever. Pretty sure there is\
+some kind of timeout already coded in the webdriver code. Need to find out\
+the exception so I can trap it.\
+\
+36:\
+I'm worried that the fix I made for when the utc time and the web time are\
+different days (in custom_date_parser) might have some problems during the\
+weekend when there are only a few updates. It might get an update when\
+booting up from maintence or whatever where it sees a date/rate from many\
+hours before or even from the day before. This won't fit into the simple\
+23 / 0 hour thing I coded. Take a look.\
+I could just discard the entry if the differece between the utctime and\
+the web time is more than one hour.\
+But then, utctime and webtime are both useing GMT, right? So if they are\
+different days, it should no longer give a time, right?\
+This would be a great time to work out code for when web time is not GMT.\
+Certainly a thorny issue to deal with.\
+\
+37:\
+Make a separate logger catagory (CRITICAL) only for crashes and exits.\
+It is this that I will use to set up an SMTPHandler.\
+\
+38:\
+Consider using 0MQ to send updates to a subscribed chart GUI.\
+\
+39:\
+It would be great to create the bootstrap list from a csv.\
+\
+40:\
+Consider breaking this up into more than one module.\
+\
+41:\
+Consider adding uptime and time since last read to normal output.\
+\
+42:\
+Running chrome, I closed the window and got this:\
+Window missing.\
+Loading PhantomJS webdriver.\
+Loading webpage.\
+Closing webdriver.\
+Exiting program.\
+\
+43:\
+Because I'm sending stuff to sys.stdout, it can't go to the log file.\
+Is that a problem I should worry about? It would be great if it could\
+go to both places.\
+\
+44:\
+Need to remember that this needs more than pymysql 0.6.1\
+When I go to production, I need to upgrade to the dev version on all\
+machines: ref: https://github.com/PyMySQL/PyMySQL/issues/136\
+pip install --upgrade https://github.com/PyMySQL/PyMySQL/tarball/master\
+\
+Consider moving sql stuff to a class. \
+globals = not OOP.\
+\
+\
+}
