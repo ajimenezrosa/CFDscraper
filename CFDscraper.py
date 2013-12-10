@@ -514,7 +514,7 @@ def browser2dframe(browser, attribute):
         logger.error(profiler[1])
         logger.error(profiler[2])
         logger.error(profiler[3])
-        logger.error("Code a refresh of the window and timeout here!")
+        browser.refresh()
     return result
 
 
