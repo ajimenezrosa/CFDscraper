@@ -1,4 +1,4 @@
 CFDscraper
 ==========
 
-A simple module for scraping financial data from javascript web tables and writig the data to SQL.
+A simple module for scraping financial data from dynamic web tables. Data is written to any SQL database using SQLalchemy.
