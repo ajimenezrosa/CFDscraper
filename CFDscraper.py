@@ -1,7 +1,27 @@
 #! /usr/bin/env python3
 # -*- coding: utf-8
 """
-A module to scrape financial data from web tables.
+A module to scrape financial data from web tables and write to MySQL.
+
+Usage: python CFDscraper.py ./config1.cfg
+First and only arg is optional path to a config file.
+
+One of the items is a list of lists with table info in it that seems like
+a headache to parse with configparser so this module simply exec()s a text
+file excerpted from the config section below. (Yes, yes, I know using exec()
+like this is frowned upon.)
+
+TODO:
+Move logging options to a command line switch.
+Make sql server stop updating and stopping sql server every week.
+Make scraper deal gracfully with sql server going away.
+(Wait loop with stored data. Write rows to a flat file perhaps.)
+Go through every sys.exit() below and make it enter a wait loop.
+Move away from SQLalchemy connectionless execution and add rollback.
+Look for chrome where it belongs for each OS.
+Check for function on linux and windows.
+If the database is not available, write rows to an object that can be "emptied"
+later.
 """
 
 import sys
@@ -10,12 +30,13 @@ import datetime
 ##### For scraping ######
 from selenium import webdriver
 from selenium.common.exceptions import NoSuchWindowException
+from selenium.webdriver.common.desired_capabilities import DesiredCapabilities
 from bs4 import BeautifulSoup
 from sqlalchemy import (create_engine, MetaData, Table, Column,
                         Integer, Float, DateTime)
 from dateutil.parser import parse
 import pandas as pd
-##### Logging ############
+##### Logging ############s
 import logging
 import logging.handlers
 ###### For timeout ########
@@ -26,7 +47,7 @@ import signal
 
 
 ######## Set up logging  ######################################################
-logger = logging.getLogger('__name__')
+logger = logging.getLogger('CFDscraper')  # Or __name__
 logger.setLevel(logging.DEBUG)
 # create file handler which logs even debug messages
 file_hand = logging.handlers.RotatingFileHandler('scrapeLog.log',
@@ -78,26 +99,24 @@ def timeout(seconds=10, error_message=os.strerror(errno.ETIME)):
     return decorator
 
 
-###### Configuration data #####################################################
+###### Some globals #########################################################
+# put these in a class at some point.
 
 total_rows_scraped = 0  # Don't change this. It's just a counter.
 last_write_time = time()  # Also a counter.
-browser_choice = "chrome"  # Choose chrome, firefox, or phantomjs
+
+##############################################################################
+###### Default Configuration Data ############################################
+###### Copy this section to a config file and load it with a CL argument #####
 
 chromepath = '/Users/jonathanamorris/Code/chromedriver'
-
+browser_choice = "phantomjs"  # Choose chrome, firefox, or phantomjs
 # Database info:
 db_host = 'dataserve.local'
 db_user = 'jonathan'
-db_pass = 
+db_pass = ''
 db_name = 'mydb'
 db_dialect = 'mysql+pymysql'
-connect_string = (db_dialect + '://' +
-                  db_user + ':' +
-                  db_pass + '@' +
-                  db_host + '/' +
-                  db_name)
-
 # Page info:
 page_source_timeout = 5  # In seconds. Must be an integer!
 browser_lifetime = 1680  # In seconds. 14400 is four hours.
@@ -109,71 +128,47 @@ web_tz = 'GMT'
 attribute = {'id': 'bonds'}
 time_col = "UTCTime"
 row_title_column = 'Country'  # Need this to know index column.
-refresh_rate = 10.5  # Number of seconds between scrapes.
+refresh_rate = 10.5  # Minimum number of seconds between scrapes.
 
-# Construct table form:
+# Table form:
 # bootstrap = (db_table_name,
-#         ((db_column1_name, web_row_string, web_col_string),
-#         (db_column2_name, web_row_string, web_col_string)))
+#            ((db_column1_name, web_row_string, web_col_string),
+#             (db_column2_name, web_row_string, web_col_string)))
 # Timestamp column name is special and will be made primary key
-# All others will be Float by default.
+# All others default to float.
 # The timestamp column, whatever its dytpe, must be the first for
 # everything to work.
-
-###### Tables list ############################################################
+# It can be just one big list of lists. I just thought the format below
+# would be more readable and less prone to making typos.
+###### Tables list #########
 
 bootstrap_list = []
 
 bootstrap1 = ("German10yrbond",
              (("UTCTime", "Germany", "Time"),
               ("Rate", "Germany", "Yield")))
+
 bootstrap_list.append(bootstrap1)
-
-bootstrap2 = ("Spain10yrbond",
-             (("UTCTime", "Spain", "Time"),
-              ("Rate", "Spain", "Yield")))
-bootstrap_list.append(bootstrap2)
-
-bootstrap3 = ("US10yrbond",
-             (("UTCTime", "United States", "Time"),
-              ("Rate", "United States", "Yield")))
-bootstrap_list.append(bootstrap3)
-
-bootstrap4 = ("France10yrbond",
-             (("UTCTime", "France", "Time"),
-              ("Rate", "France", "Yield")))
-bootstrap_list.append(bootstrap4)
-
-bootstrap5 = ("Japan10yrbond",
-             (("UTCTime", "Japan", "Time"),
-              ("Rate", "Japan", "Yield")))
-bootstrap_list.append(bootstrap5)
-
-bootstrap6 = ("Australia10yrbond",
-             (("UTCTime", "Australia", "Time"),
-              ("Rate", "Australia", "Yield")))
-bootstrap_list.append(bootstrap6)
-
-bootstrap7 = ("Italy10yrbond",
-             (("UTCTime", "Italy", "Time"),
-              ("Rate", "Italy", "Yield")))
-bootstrap_list.append(bootstrap7)
-
-bootstrap8 = ("Portugal10yrbond",
-             (("UTCTime", "Portugal", "Time"),
-              ("Rate", "Portugal", "Yield")))
-bootstrap_list.append(bootstrap8)
 
 bootstrap_list.sort()
 
 
+###############################################################################
 ######## Open database and check that it can be reached #######################
 def db_setup():
     """
     Connects to the database using SQLalchemy-core. This is the only
     function that is called outside of main().
     """
+    # print("Enter password for " + db_user + "@" + db_host + ":")
+
     logger.info('Connecting to database.')
+
+    connect_string = (db_dialect + '://' +
+                      db_user + ':' +
+                      db_pass + '@' +
+                      db_host + '/' +
+                      db_name)
 
     try:
         engine = create_engine(connect_string,
@@ -206,9 +201,6 @@ class Browser(object):
     TODO:
     Move popup close and url load to separate functions.
     Make internal methods "private".
-
-    Note: Python classes are brilliant. Self is passed so
-    that functions can access the class namespace and be more flat.
     """
     def __init__(self, browser_type="chrome"):
         self.browser_type = browser_type.lower()
@@ -230,7 +222,7 @@ class Browser(object):
 
     def new_chrome_driver(self):
         """
-        Opens or refreshes a Chrome webdriver instance.
+        Opens a Chrome webdriver instance.
 
         Options:
         http://peter.sh/experiments/chromium-command-line-switches/
@@ -265,10 +257,10 @@ class Browser(object):
 
     def new_firefox_driver(self):
         """
-        Opens or refreshes a Firefox browser and closes the popup.
+        Opens a Firefox browser and closes the popup.
         I switched to Firefox from Chrome because for some reason lxml doesn't
-        work with Chrome and Python 3.3. Because unicode from Chrome being
-        ignored by lxml.
+        work with Chrome and Python 3.3. (Because unicode from Chrome being
+        ignored by lxml.)
         """
         ## Firefox profile object
         try:
@@ -304,7 +296,7 @@ class Browser(object):
 
     def new_phantomjs_driver(self):
         """
-        Opens or refreshes a ghostjs webdriver.
+        Opens a ghostjs webdriver.
 
         For OSX:
         brew install phantomjs
@@ -312,10 +304,28 @@ class Browser(object):
         For others:
         http://phantomjs.org/download.html
         """
+        # PhantomJS args:
+        # service_args : A List of command line arguments to pass to PhantomJS
+        # service_log_path: Path for phantomjs service to log to.
+        # Command lin:
+        # github.com/ariya/phantomjs/wiki/API-Reference#command-line-options
+        # PhantomJS user agent out of the box:
+        # "Mozilla/5.0 (Macintosh; PPC Mac OS X) AppleWebKit/534.34
+        # (KHTML, like Gecko) PhantomJS/1.9.2 Safari/534.34"
+        # https://github.com/ariya/phantomjs/issues/11156
+        # Set the user agent string to something less robotic:
+        user_agent = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_9_0) " +
+                      "AppleWebKit/534.34 (KHTML, like Gecko) " +
+                      "Chrome/31.0.1650.63 Safari/534.34")
+        dcap = dict(DesiredCapabilities.PHANTOMJS)
+        dcap["phantomjs.page.settings.userAgent"] = user_agent
+        service_args = []  # Set phantomjs command line options here.
         try:
-            # Is this right? a capital letter?
             logger.info("Loading PhantomJS webdriver.")
-            driver = webdriver.PhantomJS('phantomjs')
+            driver = webdriver.PhantomJS(executable_path="phantomjs",
+                                         desired_capabilities=dcap,
+                                         service_log_path='~',
+                                         service_args=service_args)
         except:
             logger.critical("ERROR: Can't open browser.")
             clean_up(self)
@@ -540,6 +550,7 @@ def fill_from_web(browser, attribute):
             if column[0] == time_col:
                 table_value = custom_date_parser(table_value, browser)
             else:
+                table_value = table_value.replace(',', '')
                 table_value = float(table_value)
             col = [column[0], table_value]
             col_list.append(col)
@@ -653,9 +664,25 @@ def clean_up(browser):
 
     sys.exit()
 
+#  Now: move db set up stuff inside of main() or at least inside of a function.
+
+
+def import_config():
+    """
+    """
+    if len(sys.argv) > 1:
+        filename = sys.argv[1]
+        print("loading config file:" + sys.argv[1])
+
+    else:
+        filename = './CFDscraper.cfg'
+
+    exec(compile(open(filename, "rb").read(), filename, 'exec'),
+         globals(),
+         globals())  # Force import to global namespace.
+
 
 ######### Main Function #######################################################
-engine, metadata, conn = db_setup()
 
 
 def main():
@@ -674,8 +701,12 @@ def main():
     the signals might get crossed.
     """
     global last_write_time  # need to keep it global so I can reach it.
-
     logger.info("Launching CFDscraper. Jonathan Morris Copyright 2013")
+    import_config()  # Optionally load a config file given in argv()
+    global metadata
+    global engine
+    global conn
+    engine, metadata, conn = db_setup()
     setup_tables(bootstrap_list, metadata)
     browser = Browser(browser_choice)
     module_start_time = time()
@@ -695,7 +726,7 @@ def main():
             old_list = new_list
 
             if browser.age() > browser_lifetime:
-                logger.info("\nBrowser lifetime exceeded. Refreshing.")
+                logger.info("\nLifetime exceeded. Refreshing.")
                 browser.refresh()
 
             cycle_length = time() - cycle_start
@@ -716,12 +747,13 @@ def main():
     except KeyboardInterrupt:
         logger.info("^C from main loop.")
         clean_up(browser)
-    except Exception:
-        logger.debug("Error in main loop.")
-        clean_up(browser)
+    #except Exception as err:
+    #    print(err)
+    #    logger.error("Error in main loop.")
+    #    logger.error(err)
+    #    clean_up(browser)
 
 if __name__ == "__main__":
     #  if (sys.platform == 'darwin')
-    # main(sys.argv)
     main()
     sys.exit()
