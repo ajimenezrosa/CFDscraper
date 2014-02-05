@@ -12,16 +12,90 @@ file excerpted from the config section below. (Yes, yes, I know using exec()
 like this is frowned upon.)
 
 TODO:
+Issue #1:
+Find a way to detect when the phantomjs driver becomes
+inactive. For some reason, the page at investing.com stops updating. On
+inspecting, I can see that networks GETs are still occrring. How then to detect
+this? How about running two different instances of the page at a time and
+comparing them? When there is a mismatch, do a reload on one or both.
+Make this a switch in the config. You will have to rewrite things to be a
+little more OO to make it work. Might actually be fun to implement.
+Make it so that any number of browsers can be called for purposes of
+redundancy.
+
+You might think about putting a lock on the database when you check it and
+then remove the lock when you are done. This way, you could have mulitple
+instances of each program running concurrently. They could even be running on
+different computers in different locations.
+
+
+Issue #2:
+Move away from SQLalchemy connectionless execution and add
+rollback. In order to implement this properly I'll need to have something in
+memory to fill and empty in the order it was filled. I've already implemented
+this in the dbbuffer class I wrote. Move it over if needed.
+
+Issue #3:
 Move logging options to a command line switch.
 Make sql server stop updating and stopping sql server every week.
 Make scraper deal gracfully with sql server going away.
 (Wait loop with stored data. Write rows to a flat file perhaps.)
 Go through every sys.exit() below and make it enter a wait loop.
-Move away from SQLalchemy connectionless execution and add rollback.
+
+Issue #4:
+Test scraper for recovery with a restart of the SQL database.
+
+Issue #5:
+After "loading webpage" I need to check for the page actually being loaded.
+I have had a couple errors where I got a "Couldn't close popup" and the
+screenshot was just blank. There is no way I should be getting that far. Some
+element needs to be checked for. The title?
+
+Issue #6:
+Now spawning zombie or orphan processes.
+/usr/sbin/mysqld
+Nope, this is normal behavior for mysql. IT does this to improve performance.
+
+Also phantomjs
+This does not look normal.
+Perhaps this with 1.9.1:
+https://github.com/Obvious/phantomjs/issues/71
+I'm on 1.9.2 right now on my mac and 1.9.0 on linux.
+current is 1.9.7
+
+I uninstalled with apt and put the 1.9.7 executable into /usr/bin
+This executes just fine but I'm still getting 17 processes.
+I wonder if instead of launching phantomjs multiple times, I'm supposed to
+launch multiple windows?
+
+This may have nothing to do with phantomjs. It may be selenium or ghostdriver
+that is messing up.
+Upgraded selenium as well to 2.39 and no luck.
+This is a problem. I've reached my memory,(but not cpu) limit for running
+CFDscraper at seven instances. That's probably 49 instances of phantomjs at
+133M each. (6.5GB) At this rate, going back to chrome would be better.
+
+Next try calling the browser manually while cloesly watching top to see
+wherer things go south. Then go deeper and see if the same behavior arises in
+pure phantomjs. Not sure how to do this. Do I need to do it in a js
+command line?
+
+Next try running the same with chrome. Seven chrome browsers isn't too bad.
+You will need to make sure chromedriver is installed in the right place.
+Also move chromedriver to the correct place for osx so you don't have to
+specify in the configs.
+
+
+
+Other Issues:
 Look for chrome where it belongs for each OS.
 Check for function on linux and windows.
 If the database is not available, write rows to an object that can be "emptied"
 later.
+Include hours of operation in the config file and don't scrape at these times.
+Make a way to scrape a page with just one data point.
+Turn the database writer into a class in order to do away with pesky globals.
+Move classes into a seperate file.
 """
 
 import sys
@@ -33,12 +107,13 @@ from selenium.common.exceptions import NoSuchWindowException
 from selenium.webdriver.common.desired_capabilities import DesiredCapabilities
 from bs4 import BeautifulSoup
 from sqlalchemy import (create_engine, MetaData, Table, Column,
-                        Integer, Float, DateTime)
+                        Integer, DateTime, Float)
 from dateutil.parser import parse
 import pandas as pd
 ##### Logging ############s
 import logging
 import logging.handlers
+import uuid  # For creating unique name for screenshots.
 ###### For timeout ########
 from functools import wraps
 import errno
@@ -46,24 +121,98 @@ import os
 import signal
 
 
+###### Some globals #########################################################
+# Put these into a class at some point.
+
+total_rows_scraped = 0  # Don't change this. It's just a counter.
+last_write_time = time()  # Also a counter.
+
+##############################################################################
+###### Default Configuration Data ############################################
+###### Copy this section to a config file and load it with a CL argument #####
+dataname = 'bondCFD'
+logpath = dataname + '_scrape.log'
+
+chromepath = '/Users/jonathanamorris/Code/chromedriver'
+browser_choice = "phantomjs"  # Choose chrome, firefox, or phantomjs
+phantom_log_path = dataname + '_phantomjs.log'
+# Database info:
+db_host = 'dataserve.local'
+db_user = 'jonathan'
+db_pass = ''
+db_name = 'mydb'
+db_dialect = 'mysql+pymysql'
+# Page info:
+page_source_timeout = 5  # In seconds. Must be an integer.
+browser_lifetime = 1680  # In seconds. 14400 is four hours.
+base_url = 'http://www.investing.com'
+url_string = base_url + '/rates-bonds/government-bond-spreads'
+web_tz = 'GMT'
+
+# Table info:
+attribute = {'id': 'bonds'}
+time_col = "UTCTime"
+row_title_column = 'Country'  # Need this to know index column.
+refresh_rate = 10.5  # Minimum number of seconds between scrapes.
+
+# Table form:
+# bootstrap = (db_table_name,
+#            ((db_column1_name, web_row_string, web_col_string),
+#             (db_column2_name, web_row_string, web_col_string)))
+# Timestamp column name is special and will be made primary key
+# All others default to float.
+# The timestamp column, whatever its dytpe, must be the first for
+# everything to work.
+# It can be just one big list of lists. I just thought the format below
+# would be more readable and less prone to making typos.
+###### Tables list #########
+
+bootstrap_list = []
+
+bootstrap1 = ("German10yrbond",
+             (("UTCTime", "Germany", "Time"),
+              ("Value", "Germany", "Yield")))
+
+bootstrap_list.append(bootstrap1)
+
+bootstrap_list.sort()
+###############################################################################
+###############################################################################
+
+
+def import_config():
+    """
+    """
+    if len(sys.argv) > 1:
+        filename = sys.argv[1]
+        print("loading config file:" + sys.argv[1])
+    else:
+        filename = './CFDscraper.cfg'
+    exec(compile(open(filename, "rb").read(), filename, 'exec'),
+         globals(),
+         globals())  # Force import to global namespace.
+
+import_config()  # This needs to happen before the logger gets set up.
+
+
 ######## Set up logging  ######################################################
 logger = logging.getLogger('CFDscraper')  # Or __name__
 logger.setLevel(logging.DEBUG)
-# create file handler which logs even debug messages
-file_hand = logging.handlers.RotatingFileHandler('scrapeLog.log',
+# Create file handler which logs even debug messages.
+file_hand = logging.handlers.RotatingFileHandler(logpath,
                                                  maxBytes=10000,
                                                  backupCount=2)
-file_hand.setLevel(logging.INFO)  # Set logging level here.
-# create console handler with a higher log level
+file_hand.setLevel(logging.ERROR)  # Set logging level here.
+# Create console handler with a higher log level.
 console_hand = logging.StreamHandler()
-console_hand.setLevel(logging.DEBUG)  # Set logging level here. Normally INFO
-# create formatter and add it to the handlers
+console_hand.setLevel(logging.ERROR)  # Set logging level here. Normally INFO
+# Create formatter and add it to the handlers.
 form_string = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 formatter = logging.Formatter(form_string)
 formatter2 = logging.Formatter('%(message)s')
 console_hand.setFormatter(formatter2)
 file_hand.setFormatter(formatter)
-# add the handlers to logger
+# Add the handlers to logger.
 logger.addHandler(console_hand)
 logger.addHandler(file_hand)
 
@@ -99,60 +248,6 @@ def timeout(seconds=10, error_message=os.strerror(errno.ETIME)):
     return decorator
 
 
-###### Some globals #########################################################
-# put these in a class at some point.
-
-total_rows_scraped = 0  # Don't change this. It's just a counter.
-last_write_time = time()  # Also a counter.
-
-##############################################################################
-###### Default Configuration Data ############################################
-###### Copy this section to a config file and load it with a CL argument #####
-
-chromepath = '/Users/jonathanamorris/Code/chromedriver'
-browser_choice = "phantomjs"  # Choose chrome, firefox, or phantomjs
-# Database info:
-db_host = 'dataserve.local'
-db_user = 'jonathan'
-db_pass = ''
-db_name = 'mydb'
-db_dialect = 'mysql+pymysql'
-# Page info:
-page_source_timeout = 5  # In seconds. Must be an integer!
-browser_lifetime = 1680  # In seconds. 14400 is four hours.
-base_url = 'http://www.investing.com'
-url_string = base_url + '/rates-bonds/government-bond-spreads'
-web_tz = 'GMT'
-
-# Table info:
-attribute = {'id': 'bonds'}
-time_col = "UTCTime"
-row_title_column = 'Country'  # Need this to know index column.
-refresh_rate = 10.5  # Minimum number of seconds between scrapes.
-
-# Table form:
-# bootstrap = (db_table_name,
-#            ((db_column1_name, web_row_string, web_col_string),
-#             (db_column2_name, web_row_string, web_col_string)))
-# Timestamp column name is special and will be made primary key
-# All others default to float.
-# The timestamp column, whatever its dytpe, must be the first for
-# everything to work.
-# It can be just one big list of lists. I just thought the format below
-# would be more readable and less prone to making typos.
-###### Tables list #########
-
-bootstrap_list = []
-
-bootstrap1 = ("German10yrbond",
-             (("UTCTime", "Germany", "Time"),
-              ("Rate", "Germany", "Yield")))
-
-bootstrap_list.append(bootstrap1)
-
-bootstrap_list.sort()
-
-
 ###############################################################################
 ######## Open database and check that it can be reached #######################
 def db_setup():
@@ -184,7 +279,7 @@ def db_setup():
     return engine, metadata, conn
 
 
-########## Webdrivers class #########################################
+########## Webdrivers class ###################################################
 class Browser(object):
     """
     Wrapper class for webdriver.
@@ -244,15 +339,32 @@ class Browser(object):
             driver = webdriver.Chrome(executable_path=chromepath,
                                       chrome_options=options)
             logger.info("Loading webpage.")
-            driver.get(url_string)
         except:
             logger.error("Can't open webdriver.")
+
+        attempts = 0
+        while attempts < 10:
+            try:
+                logger.info("Loading webpage.")
+                driver.get(url_string)
+                break
+            except:
+                attempts += 1
+                logger.error("Page load failed. Retrying.")
+                sleep(2)
+                # The TBs generated here are of little use.
+                # All the good stuff is inside phantomjs.
+                # logger.critical("Can't load webpage.", exc_info=1)
+                # clean_up(self)
+        if attempts == 10:
+            logger.critical("Page load re-try limit exceeded.")
+            clean_up(self)
         try:
             # browser.find_element_by_class_name("popupAdCloseIcon").click()
             driver.find_element_by_partial_link_text("Continue").click()
         except:
-            logger.critical("ERROR: Can't close the popup.")
-            clean_up(self)
+            logger.error("ERROR: Can't close the popup.")
+            pass
         return driver
 
     def new_firefox_driver(self):
@@ -279,19 +391,27 @@ class Browser(object):
             logger.info("Loading FireFox webdriver.")
             driver = webdriver.Firefox(firefox_profile)
         except:
-            logger.critical("ERROR: Can't open browser.")
+            logger.critical("ERROR: Can't open browser.", exc_info=1)
             clean_up(self)
-        try:
-            logger.info("Loading webpage.")
-            driver.get(url_string)
-        except:
-            logger.critical("ERROR: Can't open page.")
-            clean_up(self)
+
+        attempts = 0
+        while attempts < 10:
+            try:
+                logger.info("Loading webpage.")
+                driver.get(url_string)
+                break
+            except:
+                attempts += 1
+                logger.error("Page load failed. Retrying.")
+                sleep(2)
+                # logger.critical("Can't load webpage.", exc_info=1)
+                # clean_up(self)
+
         try:
             driver.find_element_by_partial_link_text("Continue").click()
         except:
-            logger.critical("ERROR: Can't close popup.")
-            clean_up(self)
+            logger.error("ERROR: Can't close popup.")
+            pass
         return driver
 
     def new_phantomjs_driver(self):
@@ -300,6 +420,12 @@ class Browser(object):
 
         For OSX:
         brew install phantomjs
+
+        If not using brew:
+            Install NodeJS
+            Using Node's package manager install phantomjs:
+                npm -g install phantomjs
+            Install selenium (in virtualenv, if using.)
 
         For others:
         http://phantomjs.org/download.html
@@ -313,33 +439,49 @@ class Browser(object):
         # "Mozilla/5.0 (Macintosh; PPC Mac OS X) AppleWebKit/534.34
         # (KHTML, like Gecko) PhantomJS/1.9.2 Safari/534.34"
         # https://github.com/ariya/phantomjs/issues/11156
-        # Set the user agent string to something less robotic:
-        user_agent = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_9_0) " +
+        # Set the user agent string to something less robotronic:
+        user_agent = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_9_1) " +
                       "AppleWebKit/534.34 (KHTML, like Gecko) " +
                       "Chrome/31.0.1650.63 Safari/534.34")
         dcap = dict(DesiredCapabilities.PHANTOMJS)
         dcap["phantomjs.page.settings.userAgent"] = user_agent
-        service_args = []  # Set phantomjs command line options here.
+        service_args = ['--debug=false',
+                        '--ignore-ssl-errors=true'
+                        ]  # Set phantomjs command line options here.
+
         try:
             logger.info("Loading PhantomJS webdriver.")
             driver = webdriver.PhantomJS(executable_path="phantomjs",
                                          desired_capabilities=dcap,
-                                         service_log_path='~',
+                                         service_log_path=phantom_log_path,
                                          service_args=service_args)
         except:
-            logger.critical("ERROR: Can't open browser.")
+            logger.critical("ERROR: Can't open browser.", exc_info=1)
             clean_up(self)
-        try:
-            logger.info("Loading webpage.")
-            driver.get(url_string)
-        except:
-            logger.critical("ERROR: Can't open page.")
-            clean_up(self)
+
+        driver.set_window_size(1024, 768)
+
+        attempts = 0
+        while attempts < 10:
+            try:
+                logger.info("Loading webpage.")
+                driver.get(url_string)
+                break
+            except:
+                attempts += 1
+                logger.error("Page load failed. Retrying.")
+                sleep(2)
+                # logger.critical("Can't load webpage.", exc_info=1)
+                # clean_up(self)
+
         try:
             driver.find_element_by_partial_link_text("Continue").click()
         except:
-            logger.critical("ERROR: Can't close popup.")
-            clean_up(self)
+            logger.error("ERROR: Can't close popup.")
+            tempname = str(uuid.uuid4()) + '.png'
+            driver.save_screenshot(tempname)
+            logger.error("Screenshot: " + tempname)
+
         return driver
 
     def refresh(self):
@@ -347,7 +489,7 @@ class Browser(object):
         try:
             self.driver.quit()
         except:
-            pass
+            logger.error("ERROR: Browser process won't die.", exc_info=1)
         self.driver = self.new_driver(self.browser_type)
 
     def type(self):
@@ -372,7 +514,7 @@ class Browser(object):
             try:
                 self.html_source = self.source_inner()
             except:
-                logger.error("Second try on source load failed. Exiting")
+                logger.critical("2nd try on source load failed.", exc_info=1)
                 clean_up(self)
         except TimeoutError:
             logger.error("Time limit exceeded for webdriver.page_source.")
@@ -381,7 +523,7 @@ class Browser(object):
             try:
                 self.html_source = self.source_inner()
             except:
-                logger.error("Second try on source load failed. Exiting")
+                logger.critical("2nd try on source load failed.", exc_info=1)
                 clean_up(self)
         return self.html_source
 
@@ -392,7 +534,7 @@ class Browser(object):
         """
         return self.driver.page_source  # Must be unbound method.
 
-#####################################################################
+###############################################################################
 
 
 def setup_tables(bootstrap_list, metadata):
@@ -459,7 +601,7 @@ def fill_from_db(bootstrap_list, conn):
             col_list.append(col)
         # print("col_list: ", col_list)
         row = [entry[0], col_list]
-        logger.debug("Loaded row from db: %s", str(row))
+        logger.debug("Load db: %s", str(row))
         list_of_rows.append(row)
     return list_of_rows
 
@@ -479,6 +621,7 @@ def browser2dframe(browser, attribute):
     Firefox but phantomjs and Chrome work only with html5lib so that
     is what I'm going with. The difference is only 330 milliseconds
     so that's fine for now. Write an lxml-based custom parser later.
+    (a lot later.)
     (I gained around that much when I switched to phantomjs so that
     is also fine.)
     """
@@ -498,12 +641,15 @@ def browser2dframe(browser, attribute):
 
     start3 = time()
     table = soup.find('table', attribute)
+    if table is None:
+        logger.critical("Can't find the table. Is the attribute correct?")
+        clean_up(browser)
     try:
         header = [th.text for th in table.find('thead').select('th')]
     except AttributeError:
-        logger.critical("Can't find the web table!")
+        logger.critical("Can't find the table head!")
         clean_up(browser)
-    # header[:1] = ['',' ']  # Not needed here.
+
     body = [[td.text for td in row.select('td')]
             for row in table.findAll('tr')]
     body2 = [x for x in body if x != []]  # Must remove empty rows.
@@ -511,7 +657,6 @@ def browser2dframe(browser, attribute):
     tbl_d = {name: col for name, col in zip(header, cols)}
     end_time3 = time() - start3
     profiler.append("Body of function: " + str(end_time3))
-
     start4 = time()
     logger.debug("Creating Dataframe in browser2dframe.")
     result = pd.DataFrame(tbl_d, columns=header)
@@ -543,8 +688,6 @@ def fill_from_web(browser, attribute):
         # logger.debug("tablename: %s", entry[0])
         col_list = []
         for column in entry[1]:
-            # print (column[0], column[1], column[2])
-            # look up in table here.
             table_value = table_df.loc[column[1], column[2]]
             # logger.debug(table_value)
             if column[0] == time_col:
@@ -554,9 +697,9 @@ def fill_from_web(browser, attribute):
                 table_value = float(table_value)
             col = [column[0], table_value]
             col_list.append(col)
-        # print("col_list: ", col_list)
+
         row = [entry[0], col_list]
-        logger.debug("Loaded row from web: %s", str(row))
+        logger.debug("Load web: %s", str(row))
         list_of_rows.append(row)
     return list_of_rows
 
@@ -578,7 +721,7 @@ def custom_date_parser(date_string, browser):
     if (len(date_string) == 7):
         date_string = '0' + date_string
     if ((web_tz == 'GMT') or (web_tz == 'UTC')):
-        # Fancy stuff for when the web and utc date are not synced at midnight.
+        # Fancy stuff for when the web and utc date are not synced @ midnight.
         current_utc = datetime.datetime.utcnow()
         web_hour = int(date_string[0:2])
         if current_utc.hour == 0:
@@ -621,25 +764,26 @@ def write2db(changed_list):
     TODO:
     Using connectionless execution. Fix this.
     Make the update happen en masse rather than one
-    table at a time. This could be much faster.
+    table at a time. This could be faster.
     Not sure if possible when updates are in diferent tables.
 
     Put some error handling when you get back some errors.
     """
-    global total_rows_scraped  # The only global keyword in this module.
-    global last_write_time  # Well, that makes two.
+    global total_rows_scraped
+    global last_write_time
     for entry in changed_list:
         null_date = (entry[1][0][1] is None)
         if null_date:
             pass
         else:
-            logger.debug("Writing row to the db: %s", str(entry))
+            logger.debug("Write db: %s", str(entry))
             total_rows_scraped += 1
+
             current_table = Table(entry[0], metadata)
             inserter = current_table.insert()
-            insert_dict = dict(entry[1])
-
+            insert_dict = dict(entry[1])  # keep this.
             inserter.execute(insert_dict)
+
             last_write_time = time()
             logger.debug("Finished db insert.")
 
@@ -652,12 +796,14 @@ def clean_up(browser):
     Closes any webdriver instances and ends program.
     """
     global metadata
-    logger.info("Closing webdriver.")
+    logger.critical("Closing webdriver.")
+
     try:
         browser.quit()
+
     except:
-        logger.error("Browser process won't terminate.")
-    logger.info("Exiting program.")
+        logger.critical("Browser process won't terminate.")
+    logger.critical("Exiting program.")
     conn.close()  # Close connection.
     engine.dispose()  # Actively close out connections.
     metadata = None
@@ -665,23 +811,6 @@ def clean_up(browser):
     sys.exit()
 
 #  Now: move db set up stuff inside of main() or at least inside of a function.
-
-
-def import_config():
-    """
-    """
-    if len(sys.argv) > 1:
-        filename = sys.argv[1]
-        print("loading config file:" + sys.argv[1])
-
-    else:
-        filename = './CFDscraper.cfg'
-
-    exec(compile(open(filename, "rb").read(), filename, 'exec'),
-         globals(),
-         globals())  # Force import to global namespace.
-
-
 ######### Main Function #######################################################
 
 
@@ -701,8 +830,7 @@ def main():
     the signals might get crossed.
     """
     global last_write_time  # need to keep it global so I can reach it.
-    logger.info("Launching CFDscraper. Jonathan Morris Copyright 2013")
-    import_config()  # Optionally load a config file given in argv()
+    logger.info("CFDscraper by Jonathan Morris Copyright 2014")
     global metadata
     global engine
     global conn
@@ -711,49 +839,40 @@ def main():
     browser = Browser(browser_choice)
     module_start_time = time()
     last_write_time = time()
-
     old_list = fill_from_db(bootstrap_list, conn)
-    logger.info("Starting scraping loop...")
+    logger.info("Starting scraping loop.")
 
     try:
         while True:
             cycle_start = time()
             new_list = fill_from_web(browser, attribute)
-            # print('Fill from web:', time()-cycle_start)
-            # print(new_list)
             changed_list = compare_lists(old_list, new_list)
             write2db(changed_list)
             old_list = new_list
 
             if browser.age() > browser_lifetime:
-                logger.info("\nLifetime exceeded. Refreshing.")
+                logger.info("Lifetime exceeded. Refreshing.")
                 browser.refresh()
 
             cycle_length = time() - cycle_start
             sleep_time = refresh_rate - cycle_length
+
             if sleep_time < 0:
                 sleep_time = 0
             # Write some stuff to stdout so I know it is alive.
             uptime = int(time() - module_start_time)
             since_write = int(time() - last_write_time)
-            sys.stdout.write("\rRows Scraped: %d" % (total_rows_scraped))
+            sys.stdout.write("\rRows: %d" % (total_rows_scraped))
             sys.stdout.write(", Uptime: %ss" % str(uptime))
-            sys.stdout.write(", Since last write: %ss" % str(since_write))
+            sys.stdout.write(", Since write: %ss" % str(since_write))
             sys.stdout.write(", Sleeping: %.2fs" % sleep_time)
             sys.stdout.flush()
-
             sleep(sleep_time)
-            logger.debug(" ")  # So that output is readable during debug.
+
     except KeyboardInterrupt:
-        logger.info("^C from main loop.")
+        logger.critical("^C from main loop.")
         clean_up(browser)
-    #except Exception as err:
-    #    print(err)
-    #    logger.error("Error in main loop.")
-    #    logger.error(err)
-    #    clean_up(browser)
 
 if __name__ == "__main__":
-    #  if (sys.platform == 'darwin')
     main()
     sys.exit()
