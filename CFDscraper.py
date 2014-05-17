@@ -54,7 +54,7 @@ element needs to be checked for. The title?
 Issue #6:
 Now spawning zombie or orphan processes.
 /usr/sbin/mysqld
-Nope, this is normal behavior for mysql. IT does this to improve performance.
+Nope, this is normal behavior for mysql. It does this to improve performance.
 
 Also phantomjs
 This does not look normal.
@@ -73,10 +73,10 @@ that is messing up.
 Upgraded selenium as well to 2.39 and no luck.
 This is a problem. I've reached my memory,(but not cpu) limit for running
 CFDscraper at seven instances. That's probably 49 instances of phantomjs at
-133M each. (6.5GB) At this rate, going back to chrome would be better.
+133M each. (6.5GB) At this rate, going back to chrome would be much better.
 
 Next try calling the browser manually while cloesly watching top to see
-wherer things go south. Then go deeper and see if the same behavior arises in
+where things go south. Then go deeper and see if the same behavior arises in
 pure phantomjs. Not sure how to do this. Do I need to do it in a js
 command line?
 
@@ -85,6 +85,8 @@ You will need to make sure chromedriver is installed in the right place.
 Also move chromedriver to the correct place for osx so you don't have to
 specify in the configs.
 
+Ultimately, set something to do unix ps and count zombies. I can't have this
+happen again.
 
 
 Other Issues:
@@ -273,7 +275,7 @@ def db_setup():
         conn = engine.connect()
 
     except:
-        logger.error('ERROR: Database not reachable. Exiting')
+        logger.error('ERROR: Database not reachable. Exiting', exc_info=1)
         sys.exit()
 
     return engine, metadata, conn
@@ -340,12 +342,12 @@ class Browser(object):
                                       chrome_options=options)
             logger.info("Loading webpage.")
         except:
-            logger.error("Can't open webdriver.")
+            logger.error("Can't open webdriver.", exc_info=1)
 
         attempts = 0
         while attempts < 10:
             try:
-                logger.info("Loading webpage.")
+                logger.info("Loading webpage: " + url_string)
                 driver.get(url_string)
                 break
             except:
@@ -397,7 +399,7 @@ class Browser(object):
         attempts = 0
         while attempts < 10:
             try:
-                logger.info("Loading webpage.")
+                logger.info("Loading webpage: " + url_string)
                 driver.get(url_string)
                 break
             except:
@@ -464,7 +466,7 @@ class Browser(object):
         attempts = 0
         while attempts < 10:
             try:
-                logger.info("Loading webpage.")
+                logger.info("Loading webpage: " + url_string)
                 driver.get(url_string)
                 break
             except:
