@@ -135,12 +135,12 @@ last_write_time = time()  # Also a counter.
 dataname = 'bondCFD'
 logpath = dataname + '_scrape.log'
 
-chromepath = '/Users/jonathanamorris/Code/chromedriver'
+chromepath = '/Users/jmorris/Code/chromedriver'
 browser_choice = "phantomjs"  # Choose chrome, firefox, or phantomjs
 phantom_log_path = dataname + '_phantomjs.log'
 # Database info:
 db_host = 'dataserve.local'
-db_user = 'jonathan'
+db_user = 'j'
 db_pass = ''
 db_name = 'mydb'
 db_dialect = 'mysql+pymysql'
